@@ -1,153 +1,100 @@
 package eu.kanade.tachiyomi.extension.pt.remangas
 
+import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.annotation.Source
-import keiyoushi.network.get
-import keiyoushi.network.rateLimit
-import keiyoushi.source.KeiSource
-import keiyoushi.utils.parseAs
-import keiyoushi.utils.stringOrNull
-import keiyoushi.utils.toJsonElement
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.serialization.json.JsonElement
-import okhttp3.Headers
-import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.OkHttpClient
-import kotlin.time.Duration.Companion.seconds
+import okhttp3.Request
+import okhttp3.Response
 
 @Source
-abstract class NoxManga : KeiSource() {
+abstract class NoxManga : HttpSource() {
+    override val supportsLatest = true
 
-    private val apiUrl get() = "$baseUrl/api/v1"
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/home", headers)
 
-    override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder = apply {
-        addInterceptor(SignatureInterceptor { baseUrl })
-        rateLimit(3, 1.seconds) { it.encodedPath.startsWith("/api/") }
-    }
+    override fun popularMangaParse(response: Response): MangasPage = parseCards(response, ".cx-card")
 
-    override fun Headers.Builder.configureHeaders(): Headers.Builder = add("Sec-Fetch-Site", "same-origin")
+    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/home", headers)
 
-    override suspend fun getPopularManga(page: Int): MangasPage = getMangaList(page)
+    override fun latestUpdatesParse(response: Response): MangasPage = parseCards(response, ".cx-side-item")
 
-    override suspend fun getLatestUpdates(page: Int): MangasPage {
-        val url = "$apiUrl/chapters/recent".toHttpUrl().newBuilder()
-            .addQueryParameter("page", page.toString())
-            .addQueryParameter("per_page", PAGE_SIZE.toString())
-            .addQueryParameter("unique", "true")
-            .addQueryParameter("sort", "new")
-            .build()
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = GET("$baseUrl/search?q=${query.trim().replace(" ", "+")}", headers)
 
-        val result = client.get(url).parseAs<ChapterUpdateListDto>()
-        return MangasPage(result.mangas, result.hasNextPage)
-    }
+    override fun searchMangaParse(response: Response): MangasPage = parseCards(response, "a[href^='/manga/']")
 
-    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage = getMangaList(page, query, filters)
-
-    private suspend fun getMangaList(page: Int, query: String = "", filters: FilterList = FilterList()): MangasPage {
-        val url = "$apiUrl/comics".toHttpUrl().newBuilder()
-            .addQueryParameter("page", page.toString())
-            .addQueryParameter("per_page", PAGE_SIZE.toString())
-            .apply {
-                if (query.isNotBlank()) {
-                    addQueryParameter("q", query)
-                }
-                filters.filterIsInstance<UrlFilter>().forEach { it.addToUrl(this) }
+    private fun parseCards(response: Response, selector: String): MangasPage {
+        val cards = response.asJsoup().select(selector).mapNotNull { card ->
+            val link = card.selectFirst("a[href^='/manga/']") ?: if (card.tagName() == "a") card else null
+            val href = link?.attr("href") ?: return@mapNotNull null
+            val title = card.selectFirst(".cx-card-title, .cx-side-name, .cx-title")?.text()?.trim()
+                ?: card.selectFirst("img[alt]")?.attr("alt")?.trim()
+                ?: return@mapNotNull null
+            SManga.create().apply {
+                url = href.substringAfter("/manga/")
+                this.title = title
+                thumbnail_url = card.selectFirst("img")?.absUrl("src")
             }
-            .build()
-
-        val result = client.get(url).parseAs<MangaListDto>()
-        return MangasPage(result.comics.map(MangaDto::toSManga), result.hasNextPage)
+        }.distinctBy { it.url }
+        require(cards.isNotEmpty()) { "O HTML do NixManga não contém obras; o layout pode ter mudado." }
+        return MangasPage(cards, false)
     }
 
-    override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
-        if (url.pathSegments.firstOrNull() !in MANGA_PATH_SEGMENTS) return null
-        val slug = url.pathSegments.getOrNull(1)?.takeIf(String::isNotEmpty) ?: return null
-        val manga = SManga.create().apply { this.url = "/manga/$slug" }
+    override fun getMangaUrl(manga: SManga): String = "$baseUrl/manga/${manga.url}"
 
-        return fetchMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = false)
-            .manga
-            .apply { initialized = true }
-    }
+    override fun mangaDetailsRequest(manga: SManga): Request = GET(getMangaUrl(manga), headers)
 
-    override suspend fun fetchMangaUpdate(
-        manga: SManga,
-        chapters: List<SChapter>,
-        fetchDetails: Boolean,
-        fetchChapters: Boolean,
-    ): SMangaUpdate = coroutineScope {
-        val slug = manga.slug
-
-        val details = async {
-            if (fetchDetails) {
-                client.get("$apiUrl/comics/slug/$slug").parseAs<MangaDto>().toSManga()
-            } else {
-                manga
+    override fun mangaDetailsParse(response: Response): SManga {
+        val doc = response.asJsoup()
+        val title = doc.selectFirst("h1, .detail-title")?.text()?.trim()
+            ?: throw Exception("O HTML do NixManga não contém o título da obra.")
+        return SManga.create().apply {
+            this.title = title
+            thumbnail_url = doc.selectFirst("img[alt='$title'], .detail-cover img, img[alt]")?.absUrl("src")
+            description = doc.selectFirst(".detail-description, .synopsis, [class*=description]")?.text()?.trim()
+            genre = doc.select(".tag-chip, .detail-tags a").joinToString { it.text().trim() }
+            val statusText = doc.selectFirst("p:matches(^Status:)")?.text()?.lowercase().orEmpty()
+            status = when {
+                "completo" in statusText -> SManga.COMPLETED
+                "hiato" in statusText -> SManga.ON_HIATUS
+                "cancelado" in statusText -> SManga.CANCELLED
+                "andamento" in statusText -> SManga.ONGOING
+                else -> SManga.UNKNOWN
             }
         }
+    }
 
-        val chapterList = async {
-            if (fetchChapters) {
-                val url = "$apiUrl/comics/slug/$slug/chapters".toHttpUrl().newBuilder()
-                    .addQueryParameter("page", "1")
-                    .addQueryParameter("per_page", CHAPTER_PAGE_SIZE.toString())
-                    .addQueryParameter("sort", "newest")
-                    .build()
+    override fun chapterListRequest(manga: SManga): Request = GET(getMangaUrl(manga), headers)
 
-                client.get(url).parseAs<ChapterListDto>().chapters.map { it.toSChapter(slug) }
-            } else {
-                chapters
+    override fun chapterListParse(response: Response): List<SChapter> {
+        val chapters = response.asJsoup().select(".chapter-item-modern[href^='/read/']").mapNotNull { link ->
+            val href = link.attr("href")
+            val number = Regex("(?:capitulo|capítulo)[- ]([0-9]+(?:\\.[0-9]+)?)", RegexOption.IGNORE_CASE)
+                .find(href)?.groupValues?.get(1)?.toFloatOrNull() ?: return@mapNotNull null
+            SChapter.create().apply {
+                url = href
+                name = link.text().trim().ifEmpty { "Capítulo $number" }
+                chapter_number = number
             }
-        }
-
-        SMangaUpdate(manga = details.await(), chapters = chapterList.await())
+        }.distinctBy { it.url }
+        require(chapters.isNotEmpty()) { "O HTML do NixManga não contém capítulos." }
+        return chapters
     }
 
-    override suspend fun getPageList(chapter: SChapter): List<Page> = client.get("$apiUrl/chapters/${chapter.url}?skip_view=true")
-        .parseAs<ChapterPagesDto>()
-        .toPageList()
+    override fun pageListRequest(chapter: SChapter): Request = GET(baseUrl + chapter.url, headers)
 
-    override val supportsFilterFetching: Boolean get() = true
-
-    override suspend fun fetchFilterData(): JsonElement = client.get("$apiUrl/genres")
-        .parseAs<GenreListDto>()
-        .data
-        .filter { it.slug.isNotEmpty() }
-        .toJsonElement()
-
-    override fun getFilterList(data: JsonElement?): FilterList {
-        val genres = data?.parseAs<List<GenreDto>>()
-            ?: return FilterList(SortFilter(), TypeFilter(), StatusFilter(), DemographicFilter(), ContentFilter())
-
-        return FilterList(
-            SortFilter(),
-            TypeFilter(),
-            StatusFilter(),
-            DemographicFilter(),
-            ContentFilter(),
-            GenreFilter(genres),
-        )
+    override fun pageListParse(response: Response): List<Page> {
+        val pages = response.asJsoup().select("img[alt*='Página'], .reader-content img, main img")
+            .mapNotNull { it.absUrl("src").takeIf(String::isNotBlank) }
+            .distinct()
+        require(pages.isNotEmpty()) { "O HTML do NixManga não contém páginas de leitura." }
+        return pages.mapIndexed { index, url -> Page(index, imageUrl = url) }
     }
 
-    override fun getChapterUrl(chapter: SChapter): String {
-        val mangaSlug = chapter.memo["mangaSlug"]?.stringOrNull
-        val slug = chapter.memo["slug"]?.stringOrNull
-        if (mangaSlug == null || slug == null) throw Exception("Atualize a lista de capítulos")
-
-        return "$baseUrl/read/$mangaSlug/$slug"
-    }
-
-    private val SManga.slug get() = url.substringAfterLast('/')
-
-    companion object {
-        private const val PAGE_SIZE = 24
-        private const val CHAPTER_PAGE_SIZE = 10000
-        private val MANGA_PATH_SEGMENTS = listOf("manga", "read", "ler")
-    }
+    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 }

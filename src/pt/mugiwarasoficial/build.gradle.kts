@@ -6,14 +6,16 @@ plugins {
 
 keiyoushi {
     name = "Mugiwaras Oficial"
-    versionCode = 55
-    contentWarning = ContentWarning.MIXED
+    versionCode = 57
+    contentWarning = ContentWarning.SAFE
     libVersion = "1.6"
-    theme = "aurora"
 
     source {
         lang = "pt-BR"
         baseUrl = "https://mugiwarasoficial.com"
-        versionId = 2
     }
+}
+
+dependencies {
+    implementation(project(":lib:cookieinterceptor"))
 }

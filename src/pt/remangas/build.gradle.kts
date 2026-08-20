@@ -5,10 +5,10 @@ plugins {
 }
 
 keiyoushi {
-    name = "NoxManga"
-    versionCode = 54
-    contentWarning = ContentWarning.MIXED
-    libVersion = "1.6"
+    name = "NixManga"
+    versionCode = 55
+    contentWarning = ContentWarning.SAFE
+    libVersion = "1.4"
 
     source {
         lang = "pt-BR"

@@ -1,0 +1,32 @@
+name: Sync Upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 23 * * *" # Executa diariamente às 20:00 (UTC-3 / Horário de Brasília)
+
+permissions: {}
+
+jobs:
+  sync:
+    name: Sync upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.BOT_PAT }}
+          persist-credentials: true
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync upstream
+        run: python .github/scripts/sync-upstream.py --push

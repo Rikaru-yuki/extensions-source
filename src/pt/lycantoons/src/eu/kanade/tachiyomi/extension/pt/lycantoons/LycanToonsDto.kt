@@ -7,9 +7,7 @@ import keiyoushi.utils.tryParse
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.jsonPrimitive
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.TimeZone
+import kotlin.time.Instant
 
 @Serializable
 class PopularResponse(
@@ -68,21 +66,22 @@ class SearchResponse(
 }
 
 @Serializable
-class ChapterResponse(
-    val capitulos: List<ChapterDto>,
+class ChapterListDto(
+    val chapters: List<ChapterDto>,
+    val total: Int = 0,
 )
 
 @Serializable
 class ChapterDto(
     private val numero: JsonElement,
     private val createdAt: String? = null,
-    private val pageCount: Int? = null,
+    private val titulo: String? = null,
 ) {
     fun toSChapter(slug: String) = SChapter.create().apply {
         val numberString = numero.jsonPrimitive.content
-        name = "Capítulo $numberString"
-        url = "/series/$slug/$numberString" + (pageCount?.let { "?pages=$it" }.orEmpty())
-        date_upload = dateFormat.tryParse(createdAt)
+        name = if (!titulo.isNullOrBlank()) "Capítulo $numberString - $titulo" else "Capítulo $numberString"
+        url = "/series/$slug/$numberString"
+        date_upload = Instant.tryParse(createdAt)
         chapter_number = numberString.toFloatOrNull() ?: -1f
     }
 }
@@ -92,21 +91,10 @@ class PageList(
     val imageUrls: List<String>,
 )
 
-@Serializable
-class FetchResult(
-    val success: Boolean,
-    val result: String,
-    val contentType: String? = null,
-)
-
 private fun parseStatus(status: String?) = when (status?.lowercase()) {
     "ongoing" -> SManga.ONGOING
     "completed" -> SManga.COMPLETED
     "hiatus" -> SManga.ON_HIATUS
     "cancelled" -> SManga.CANCELLED
     else -> SManga.UNKNOWN
-}
-
-private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT).apply {
-    timeZone = TimeZone.getTimeZone("UTC")
 }

@@ -6,9 +6,15 @@ plugins {
 
 keiyoushi {
     name = "Yomu Comics"
+<<<<<<< HEAD
     versionCode = 54
     contentWarning = ContentWarning.MIXED
     libVersion = "1.6"
+=======
+    versionCode = 55
+    contentWarning = ContentWarning.NSFW // or MIXED, please confirm
+    libVersion = "1.4"
+>>>>>>> upstream/main
 
     source {
         lang = "pt-BR"
